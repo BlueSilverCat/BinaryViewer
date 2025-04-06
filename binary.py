@@ -12,8 +12,6 @@ import Utility as U
 NoBreakSpace = "\u00a0"  # chr(int("0xA0", 16))
 ReplacementCharacter = "\ufffd"  # chr(int("0xFFFD", 16))  # �
 
-Temp = Path("temp.txt")
-
 
 def printHexList(l):
   print(len(l))
@@ -21,16 +19,15 @@ def printHexList(l):
 
 
 class Binary:
-  # SearchRegex = re.compile(r"\\x[\dA-Ha-h]{2}")  # backslashreplaceを削除
   Separator = " | "
-  SeparatorNoBreakSpace = " |" + NoBreakSpace
+  SeparatorNoBreakSpace = " |" + NoBreakSpace  # 結合させない為にNoBreakSpaceにする
   ReplacementCode = " " * 6
   Replacement = "__"
 
   def __init__(self, inputPath, outputPath, encoding="utf-8", outputLength=16, replChar=" ", *, outputVertical=False):
     self.inputPath = Path(inputPath)
     self.outputPath = Path(outputPath)
-    self.encoding = encoding  # utf-8 のみ
+    self.encoding = encoding
     self.outputLength = outputLength  # 表示幅 Byte
     self.errorPosition = set()
 
@@ -40,16 +37,18 @@ class Binary:
     self.offsetTemplate = ""
     self.string = []  # 文字データ
     self.codePoint = []  # Unicode code point
-    self.replChar = replChar
-    self.outputVertical = outputVertical
+    self.replChar = replChar  # デコード出来ない場合に置き換える文字
+    self.outputVertical = outputVertical  # 垂直方向に並べて出力するかどうか
 
     codecs.register_error("customReplace", self.customErrorHandler)
     self.checkEncoding()
 
+  # encode/decode時にエラーが発生した場合、その場所を記録する
   def customErrorHandler(self, e):
     self.errorPosition.update(range(e.start, e.end))
     return ((e.end - e.start) * self.replChar, e.end)
 
+  # Bomが付くと動作がおかしくなるので変更する
   def checkEncoding(self):
     utf16 = re.compile("utf[ _-]?16$", re.IGNORECASE)
     if utf16.match(self.encoding) is not None:
@@ -59,6 +58,7 @@ class Binary:
       self.encoding = "utf_32le"
     print(f"Encoding = {self.encoding}")
 
+  # データをメモリに読み込むが、処理に必要なだけ読み込むようにした方が良いかも
   @D.printStartEndExecuteTime
   def read(self):
     with self.inputPath.open("rb") as file:
@@ -73,11 +73,12 @@ class Binary:
     end = start + self.outputLength
     return self.rawData[start:end]
 
+  # Bom付きのencodingの場合、バイト数が正しく取得できない
   def getEncodeLength(self, data):
-    # l = len(data.encode(self.encoding, errors="backslashreplace"))
-    l = len(data.encode(self.encoding, errors="ignore"))
+    l = len(data.encode(self.encoding, errors="ignore"))  # decodeが成功したものをencodeするのでignoreで良い
     return l if l > 0 else 1
 
+  # encodeした結果、3batesならば"あ____"のような文字列を作成する
   def getCharacter(self, c, length):
     string = [U.replaceControl(c, self.Replacement)]
     string += [self.Replacement for _ in range(length - 1)]
@@ -94,31 +95,21 @@ class Binary:
     code = []
     i = 0
     length = 0
-    # end = len(s)
-    # pat = re.compile(r"\\x[\da-fA-F]{2}")  # backslashreplace
     for c in s:
-      # for i < end:
-      # print(f"{i:02X}", c, i in self.errorPositon)
-      if i in self.errorPosition:
-        # if pat.search(s[i : i + 4]) is not None:
-        # ret += self.formatChr(s[i : i + 4], isReplace=True)
+      if i in self.errorPosition:  # decode出来なかった文字の場合、そこを別の文字で置き換える
         string += [self.replChar]
         code += [self.ReplacementCode]
-        # length = -1
         i += 1
       else:
         length = self.getEncodeLength(c)
         string += self.getCharacter(c, length)
         code += self.getCodePoint(c, length)
         i += length
-      # print(f"{i:02X}", c, i in self.errorPositon, length)
-      # i += 1
-    # print(ret)
     return string, code
 
+  # 1列のデータを行毎に折り返す。
   @D.printStartEndExecuteTime
   def wrapData(self, data):
-    # l = len(self.rawData)
     ret = []
     for i in range(self.lineNumber):
       start = i * self.outputLength
@@ -129,15 +120,12 @@ class Binary:
   @D.printStartEndExecuteTime
   def getString(self):
     string = self.rawData.decode(self.encoding, errors="customReplace")
-    # string = self.rawData.decode(self.encoding, errors="backslashreplace")
-    # with Temp.open("w", encoding="utf-8") as file:
-    #   file.write(string)
     s, c = self.getData(string)
     self.string = self.wrapData(s)
     self.codePoint = self.wrapData(c)
 
   @D.printStartEndExecuteTime
-  def getTitle(self, outputString=True, outputCodePoint=True):
+  def getTitleHorizontal(self, *, outputString=True, outputCodePoint=True):
     offset = len(self.getOffset(0)) * " "
     addList = [f"{i:02X}" for i in range(self.outputLength)]
     address = " ".join(addList)
@@ -150,7 +138,7 @@ class Binary:
     return ret
 
   @D.printStartEndExecuteTime
-  def getTitleVertical(self, outputCodePoint=True):
+  def getTitleVertical(self, *, outputCodePoint=True):
     offset = len(self.getOffset(0)) * " "
     addList = [f"{i:02X}" for i in range(self.outputLength)]
     address = " ".join(addList)
@@ -187,6 +175,19 @@ class Binary:
     tail = " " * 7 * diff
     return " ".join(self.codePoint[line]) + tail
 
+  def outputLineHorizontal(self, line, *, outputString=True, outputCodePoint=True):
+    offset = self.getOffset(line * self.outputLength)
+    rawString = self.getRawString(line)
+    output = offset + U.insertSeparator(rawString, 2, " ")
+    if outputCodePoint:
+      output += Binary.Separator
+      output += self.outputCodePointLine(line)
+    if outputString:
+      output += Binary.SeparatorNoBreakSpace
+      output += self.outputStringLine(line)
+    output += "\n"
+    return output
+
   def outputLineVertical(self, line, *, outputString=True, outputCodePoint=True):
     offsetR = self.getOffset(line * self.outputLength, " B")
     rawString = self.getRawString(line, fill=False)
@@ -200,23 +201,10 @@ class Binary:
     output += "\n"
     return output
 
-  def outputLine(self, line, *, outputString=True, outputCodePoint=True):
-    offset = self.getOffset(line * self.outputLength)
-    rawString = self.getRawString(line)
-    output = offset + U.insertSeparator(rawString, 2, " ")
-    if outputCodePoint:
-      output += Binary.Separator
-      output += self.outputCodePointLine(line)
-    if outputString:
-      output += Binary.SeparatorNoBreakSpace
-      output += self.outputStringLine(line)
-    output += "\n"
-    return output
-
   def writeHorizontal(self, file):
-    file.write(self.getTitle())
+    file.write(self.getTitleHorizontal())
     for i in range(self.lineNumber):
-      file.write(self.outputLine(i))
+      file.write(self.outputLineHorizontal(i))
 
   def writeVertical(self, file):
     file.write(self.getTitleVertical())
@@ -234,9 +222,9 @@ class Binary:
   def perform(self):
     self.read()
     self.getString()
-    U.printList(self.string)
-    U.printList(self.codePoint)
-    printHexList(self.errorPosition)
+    # U.printList(self.string)
+    # U.printList(self.codePoint)
+    # printHexList(self.errorPosition)
     self.write()
 
 
@@ -247,8 +235,6 @@ def argumentParser():
   parser.add_argument("-e", "--encoding", default="utf-8", help="encodeing")
   parser.add_argument("-l", "--length", type=int, default=16, help="length")
   parser.add_argument("-v", "--outputVertical", action="store_true", help="output vertical")
-  # parser.add_argument("-r", "--replace", default="_", help="replace")
-  # parser.add_argument("-s", "--separate", action="store_true", help="separete")
   parser.add_argument("-a", "--showArgument", action="store_true", help="show arguments.")
   return parser.parse_args()
 
